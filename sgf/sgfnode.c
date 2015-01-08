@@ -1,4 +1,12 @@
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
+ * Emscripten port Copyright 2015 by David Hashe.                    *
+ *                                                                   *
+ * Distributed under the GNU General Public License as published by  *
+ * the Free Software Foundation - version 3 or (at your option) any  *
+ * later version.                                                    *
+\* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
  * This is GNU Go, a Go program. Contact gnugo@gnu.org, or see       *
  * http://www.gnu.org/software/gnugo/ for more information.          *
  *                                                                   *
@@ -22,6 +30,11 @@
 \* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 /*  Parts of this code were given to us by Tommy Thorn */
+
+#ifdef __EMSCRIPTEN__
+#include "emscripten.h"
+int sgfindex;
+#endif
 
 #ifdef HAVE_CONFIG_H
 #include <config.h>
@@ -890,6 +903,10 @@ static void match(int expected);
 
 static FILE *sgffile;
 
+#ifdef __EMSCRIPTEN__
+char sgfstring[MAX_FILE_BUFFER];
+#endif
+
 
 #define sgf_getch() (getc(sgffile))
 
@@ -920,9 +937,14 @@ parse_error(const char *msg, int arg)
 static void
 nexttoken()
 {
-  do
+  do {
+    #ifdef __EMSCRIPTEN__
+    lookahead = sgfstring[sgfindex];
+    sgfindex++;
+    #else
     lookahead = sgf_getch();
-  while (isspace(lookahead));
+    #endif
+  } while (isspace(lookahead));
 }
 
 
@@ -965,24 +987,56 @@ propvalue(char *buffer, int size)
   match('[');
   while (lookahead != ']' && lookahead != EOF) {
     if (lookahead == '\\') {
+      #ifdef __EMSCRIPTEN__
+      lookahead = sgfstring[sgfindex];
+      sgfindex++;
+      #else
       lookahead = sgf_getch();
+      #endif
       /* Follow the FF4 definition of backslash */
       if (lookahead == '\r') {
-	lookahead = sgf_getch();
-	if (lookahead == '\n') 
-	  lookahead = sgf_getch();
+        #ifdef __EMSCRIPTEN__
+        lookahead = sgfstring[sgfindex];
+        sgfindex++;
+        #else
+        lookahead = sgf_getch();
+        #endif
+        if (lookahead == '\n') {
+          #ifdef __EMSCRIPTEN__
+          lookahead = sgfstring[sgfindex];
+          sgfindex++;
+          #else
+          lookahead = sgf_getch();
+          #endif
+        }
       }
       else if (lookahead == '\n') {
-	lookahead = sgf_getch();
-	if (lookahead == '\r') 
-	  lookahead = sgf_getch();
+        #ifdef __EMSCRIPTEN__
+        lookahead = sgfstring[sgfindex];
+        sgfindex++;
+        #else
+        lookahead = sgf_getch();
+        #endif
+        if (lookahead == '\r') {
+          #ifdef __EMSCRIPTEN__
+          lookahead = sgfstring[sgfindex];
+          sgfindex++;
+          #else
+          lookahead = sgf_getch();
+          #endif
+        }
       }
     }
     if (size > 1) {
       *p++ = lookahead;
       size--;
     }
+    #ifdef __EMSCRIPTEN__
+    lookahead = sgfstring[sgfindex];
+    sgfindex++;
+    #else
     lookahead = sgf_getch();
+    #endif
   }
   match(']');
   
@@ -1205,6 +1259,12 @@ readsgffile(const char *filename)
   if (!sgffile)
     return NULL;
 
+  #ifdef __EMSCRIPTEN__
+  sgfindex = 0;
+  EM_ASM_INT({
+    writeAsciiToMemory(Module.loadsgf, $0);
+  }, sgfstring);
+  #endif
 
   nexttoken();
   gametree(&root, NULL, LAX_SGF);

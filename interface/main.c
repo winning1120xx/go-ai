@@ -1,4 +1,12 @@
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
+ * Emscripten port Copyright 2015 by David Hashe.                    *
+ *                                                                   *
+ * Distributed under the GNU General Public License as published by  *
+ * the Free Software Foundation - version 3 or (at your option) any  *
+ * later version.                                                    *
+\* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
  * This is GNU Go, a Go program. Contact gnugo@gnu.org, or see       *
  * http://www.gnu.org/software/gnugo/ for more information.          *
  *                                                                   *
@@ -22,6 +30,13 @@
 \* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
 #include "gnugo.h"
+
+/* This is used for compilation to javascript. We only enable it if
+ * using the emscripten toolchain.
+ */
+#ifdef __EMSCRIPTEN__
+#include "emscripten.h"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -360,6 +375,24 @@ main(int argc, char *argv[])
   int seed_specified = 0;
   
   int requested_boardsize = -1;
+
+  #ifdef __EMSCRIPTEN__
+  EM_ASM({
+    /* Add Module members to hold gtp commands and responses. */
+    Module["commands"] = [];
+    Module["responses"] = [];
+    Module["loadsgf"] = "";
+
+    /* Hijack console.log to intercept gtp responses. */
+    (function(){
+      var oldLog = console.log;
+      console.log = function (message) {
+        Module.responses[Module.responses.length-1] += message += "\n";
+        oldLog.apply(console, arguments);
+      };
+    })();
+  });
+  #endif
 
   sgftree_clear(&sgftree);
   gameinfo_clear(&gameinfo);

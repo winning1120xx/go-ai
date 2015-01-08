@@ -1,3 +1,11 @@
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
+ * Emscripten port Copyright 2015 by David Hashe.                    *
+ *                                                                   *
+ * Distributed under the GNU General Public License as published by  *
+ * the Free Software Foundation - version 3 or (at your option) any  *
+ * later version.                                                    *
+\* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
  * This is GNU Go, a Go program. Contact gnugo@gnu.org, or see   *
  * http://www.gnu.org/software/gnugo/ for more information.      *
@@ -62,14 +70,15 @@ typedef int (*gtp_fn_ptr)(char *s);
 /* Function pointer for vertex transform functions. */
 typedef void (*gtp_transform_ptr)(int ai, int aj, int *bi, int *bj);
 
-/* Elements in the array of commands required by gtp_main_loop. */
+/* Elements in the array of commands required by gtp_setup_loop. */
 struct gtp_command {
   const char *name;
   gtp_fn_ptr function;
 };
 
-void gtp_main_loop(struct gtp_command commands[],
+void gtp_setup_loop(struct gtp_command commands[],
 		   FILE *gtp_input, FILE *gtp_output, FILE *gtp_dump_commands);
+void gtp_main_loop(void);
 void gtp_internal_set_boardsize(int size);
 void gtp_set_vertex_transform_hooks(gtp_transform_ptr in,
 				    gtp_transform_ptr out);

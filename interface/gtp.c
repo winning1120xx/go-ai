@@ -1,3 +1,11 @@
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
+ * Emscripten port Copyright 2015 by David Hashe.                    *
+ *                                                                   *
+ * Distributed under the GNU General Public License as published by  *
+ * the Free Software Foundation - version 3 or (at your option) any  *
+ * later version.                                                    *
+\* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
  * This is GNU Go, a Go program. Contact gnugo@gnu.org, or see   *
  * http://www.gnu.org/software/gnugo/ for more information.      *
@@ -45,6 +53,13 @@
 
 #include "gtp.h"
 
+/* This is used for compilation to javascript. We only enable it if
+ * using the emscripten toolchain.
+ */
+#ifdef __EMSCRIPTEN__
+#include "emscripten.h"
+#endif
+
 /* These are copied from gnugo.h. We don't include this file in order
  * to remain as independent as possible of GNU Go internals.
  */
@@ -71,15 +86,48 @@ static int current_id;
 
 /* The file all GTP output goes to.  This is made global for the user
  * of this file may want to use functions other than gtp_printf() etc.
- * Set by gtp_main_loop().
+ * Set by gtp_setup_loop().
  */
 FILE *gtp_output_file = NULL;
 
+/* Global versions of other gtp_setup_loop() arguments. These are needed so that
+ * the emscripten main loop can access them. Ideally, gtp_setup_loop and
+ * gtp_main_loop would be one function, but emscripten would then only let us
+ * pass a single argument, which is even messier.
+ */
+struct gtp_command avail_commands[500];
+FILE *gtp_input_file = NULL;
+FILE *gtp_dump_commands_file = NULL;
 
-/* Read filehandle gtp_input linewise and interpret as GTP commands. */
+/* Set globals for gtp_main_loop and call. */
 void
-gtp_main_loop(struct gtp_command commands[],
+gtp_setup_loop(struct gtp_command commands[],
 	      FILE *gtp_input, FILE *gtp_output, FILE *gtp_dump_commands)
+{
+  int i;
+
+  gtp_output_file = gtp_output;
+
+  for (i = 0; commands[i].name; i++) {
+    avail_commands[i] = commands[i];
+  }
+  avail_commands[i] = commands[i];
+
+  gtp_input_file = gtp_input;
+  gtp_dump_commands_file = gtp_dump_commands;
+
+  #ifdef __EMSCRIPTEN__
+  emscripten_set_main_loop(gtp_main_loop, 0, 1);
+  #else
+  gtp_main_loop();
+  #endif
+}
+
+/* Read (global) filehandle gtp_input_file linewise and interpret as GTP
+ * commands.
+ */
+void
+gtp_main_loop()
 {
   char line[GTP_BUFSIZE];
   char command[GTP_BUFSIZE];
@@ -88,35 +136,59 @@ gtp_main_loop(struct gtp_command commands[],
   int n;
   int status = GTP_OK;
 
-  gtp_output_file = gtp_output;
+  #ifdef __EMSCRIPTEN__
+  EM_ASM({
+    Module.commands.reverse();
+  });
+  #endif
 
   while (status == GTP_OK) {
-    /* Read a line from gtp_input. */
-    if (!fgets(line, GTP_BUFSIZE, gtp_input))
-      break; /* EOF or some error */
+    #ifdef __EMSCRIPTEN__
+    /* Check whether there are new commands and read if present */
+    if (!EM_ASM_INT({
+        if (Module.commands.length > 0) {
+          writeAsciiToMemory(Module.commands.pop(), $0);
+          Module.responses.push("");
+          //console.log("yes command");
+          return 1;
+        }
+        else {
+          //console.log("no command");
+          return 0;
+        }
+      }, line)) {
+      return; /* No input in command */
+    }
+    #else
+    /* Read a line from gtp_input_file. */
+    if (!fgets(line, GTP_BUFSIZE, gtp_input_file)) {
+      status = GTP_FAILURE;
+      return; /* EOF or some error */
+    }
+    #endif
 
-    if (gtp_dump_commands) {
-      fputs(line, gtp_dump_commands);
-      fflush(gtp_dump_commands);
-    }    
+    if (gtp_dump_commands_file) {
+      fputs(line, gtp_dump_commands_file);
+      fflush(gtp_dump_commands_file);
+    }
 
     /* Preprocess the line. */
     for (i = 0, p = line; line[i]; i++) {
       char c = line[i];
       /* Convert HT (9) to SPACE (32). */
       if (c == 9)
-	*p++ = 32;
+  	*p++ = 32;
       /* Remove CR (13) and all other control characters except LF (10). */
       else if ((c > 0 && c <= 9)
-	       || (c >= 11 && c <= 31)
-	       || c == 127)
-	continue;
+  	     || (c >= 11 && c <= 31)
+  	     || c == 127)
+  	continue;
       /* Remove comments. */
       else if (c == '#')
-	break;
+  	break;
       /* Keep ordinary text. */
       else
-	*p++ = c;
+  	*p++ = c;
     }
     /* Terminate string. */
     *p = 0;
@@ -130,24 +202,32 @@ gtp_main_loop(struct gtp_command commands[],
       current_id = -1; /* No identification number. */
 
     /* Look for command name. */
-    if (sscanf(p, " %s %n", command, &n) < 1)
-      continue; /* Whitespace only on this line, ignore. */
+    if (sscanf(p, " %s %n", command, &n) < 1) {
+      status = GTP_OK;
+      return; /* Whitespace only on this line, ignore. */
+    }
     p += n;
 
     /* Search the list of commands and call the corresponding function
      * if it's found.
      */
-    for (i = 0; commands[i].name != NULL; i++) {
-      if (strcmp(command, commands[i].name) == 0) {
-	status = (*commands[i].function)(p);
-	break;
+    for (i = 0; avail_commands[i].name != NULL; i++) {
+       if (strcmp(command, avail_commands[i].name) == 0) {
+  	status = (*avail_commands[i].function)(p);
+  	break;
       }
     }
-    if (commands[i].name == NULL)
+    if (avail_commands[i].name == NULL)
       gtp_failure("unknown command");
 
     if (status == GTP_FATAL)
       gtp_panic();
+
+    #ifdef __EMSCRIPTEN__
+    if (status != GTP_OK) {
+      emscripten_cancel_main_loop();
+    }
+    #endif
   }
 }
 

@@ -1,4 +1,12 @@
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
+ * Emscripten port Copyright 2015 by David Hashe.                    *
+ *                                                                   *
+ * Distributed under the GNU General Public License as published by  *
+ * the Free Software Foundation - version 3 or (at your option) any  *
+ * later version.                                                    *
+\* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *\
  * This is GNU Go, a Go program. Contact gnugo@gnu.org, or see       *
  * http://www.gnu.org/software/gnugo/ for more information.          *
  *                                                                   *
@@ -32,9 +40,11 @@
 #include "interface.h"
 #include "liberty.h"
 #include "gtp.h"
+#include "sgftree.h"
 #include "gg_utils.h"
 
 /* Internal state that's not part of the engine. */
+static SGFTree sgftree;
 static int report_uncertainty = 0;
 static int gtp_orientation = 0;
 
@@ -140,6 +150,7 @@ DECLARE(gtp_playblack);
 DECLARE(gtp_playwhite);
 DECLARE(gtp_popgo);
 DECLARE(gtp_printsgf);
+DECLARE(gtp_printfullsgf);
 DECLARE(gtp_program_version);
 DECLARE(gtp_protocol_version);
 DECLARE(gtp_query_boardsize);
@@ -284,6 +295,7 @@ static struct gtp_command commands[] = {
   {"play",            	      gtp_play},
   {"popgo",            	      gtp_popgo},
   {"printsgf",         	      gtp_printsgf},
+  {"printfullsgf", 	      gtp_printfullsgf},
   {"protocol_version",        gtp_protocol_version},
   {"query_boardsize",         gtp_query_boardsize},
   {"query_orientation",       gtp_query_orientation},
@@ -342,13 +354,17 @@ play_gtp(FILE *gtp_input, FILE *gtp_output, FILE *gtp_dump_commands,
   gtp_orientation = gtp_initial_orientation;
   gtp_set_vertex_transform_hooks(rotate_on_input, rotate_on_output);
 
+  /* Clear sgftree state. */
+  sgftree_clear(&sgftree);
+  sgftreeCreateHeaderNode(&sgftree, board_size, komi, handicap);
+
   /* Initialize time handling. */
   init_timers();
   
   /* Prepare pattern matcher and reading code. */
   reset_engine();
   clearstats();
-  gtp_main_loop(commands, gtp_input, gtp_output, gtp_dump_commands);
+  gtp_setup_loop(commands, gtp_input, gtp_output, gtp_dump_commands);
   if (showstatistics)
     showstats();
 }
@@ -370,6 +386,7 @@ gtp_quit(char *s)
 {
   UNUSED(s);
   gtp_success("");
+  sgfFreeNode(sgftree.root);
   return GTP_QUIT;
 }
 
@@ -459,6 +476,8 @@ gtp_set_boardsize(char *s)
 
   board_size = boardsize;
   clear_board();
+  sgftree_clear(&sgftree);
+  sgftreeCreateHeaderNode(&sgftree, boardsize, komi, handicap);
   gtp_internal_set_boardsize(boardsize);
   reset_engine();
   return gtp_success("");
@@ -499,6 +518,8 @@ gtp_clear_board(char *s)
   if (stones_on_board(BLACK | WHITE) > 0)
     update_random_seed();
 
+  sgftree_clear(&sgftree);
+  sgftreeCreateHeaderNode(&sgftree, board_size, komi, handicap);
   clear_board();
   init_timers();
   
@@ -524,6 +545,8 @@ gtp_set_orientation(char *s)
   if (orientation < 0 || orientation > 7)
     return gtp_failure("unacceptable orientation");
 
+  sgftree_clear(&sgftree);
+  sgftreeCreateHeaderNode(&sgftree, board_size, komi, handicap);
   clear_board();
   gtp_orientation = orientation;
   gtp_set_vertex_transform_hooks(rotate_on_input, rotate_on_output);
@@ -611,6 +634,9 @@ gtp_playblack(char *s)
   if (!is_allowed_move(POS(i, j), BLACK))
     return gtp_failure("illegal move");
 
+  sgftreeAddPlay(&sgftree, BLACK, i, j);
+  sgffile_output(&sgftree);
+
   gnugo_play_move(POS(i, j), BLACK);
   return gtp_success("");
 }
@@ -642,6 +668,9 @@ gtp_playwhite(char *s)
   if (!is_allowed_move(POS(i, j), WHITE))
     return gtp_failure("illegal move");
 
+  sgftreeAddPlay(&sgftree, WHITE, i, j);
+  sgffile_output(&sgftree);
+
   gnugo_play_move(POS(i, j), WHITE);
   return gtp_success("");
 }
@@ -666,6 +695,9 @@ gtp_play(char *s)
   if (!is_allowed_move(POS(i, j), color))
     return gtp_failure("illegal move");
 
+  sgftreeAddPlay(&sgftree, color, i, j);
+  sgffile_output(&sgftree);
+
   gnugo_play_move(POS(i, j), color);
   return gtp_success("");
 }
@@ -685,8 +717,11 @@ gtp_fixed_handicap(char *s)
   int first = 1;
   int this_handicap;
 
-  if (gtp_version == 1)
+  if (gtp_version == 1) {
+    sgftree_clear(&sgftree);
+    sgftreeCreateHeaderNode(&sgftree, board_size, komi, handicap);
     clear_board();
+  }
   else if (stones_on_board(BLACK | WHITE) > 0)
     return gtp_failure("board not empty");
 
@@ -697,6 +732,8 @@ gtp_fixed_handicap(char *s)
     return gtp_failure("invalid handicap");
 
   if (place_fixed_handicap(this_handicap) != this_handicap) {
+    sgftree_clear(&sgftree);
+    sgftreeCreateHeaderNode(&sgftree, board_size, komi, handicap);
     clear_board();
     return gtp_failure("invalid handicap");
   }
@@ -708,6 +745,7 @@ gtp_fixed_handicap(char *s)
   for (m = 0; m < board_size; m++)
     for (n = 0; n < board_size; n++)
       if (BOARD(m, n) != EMPTY) {
+	sgftreeAddStone(&sgftree, BLACK, m, n);
 	if (!first)
 	  gtp_printf(" ");
 	else
@@ -748,6 +786,7 @@ gtp_place_free_handicap(char *s)
   for (m = 0; m < board_size; m++)
     for (n = 0; n < board_size; n++)
       if (BOARD(m, n) != EMPTY) {
+	sgftreeAddStone(&sgftree, BLACK, m, n);
 	if (!first)
 	  gtp_printf(" ");
 	else
@@ -780,10 +819,13 @@ gtp_set_free_handicap(char *s)
     n = gtp_decode_coord(s, &i, &j);
     if (n > 0) {
       if (board[POS(i, j)] != EMPTY) {
+	sgftree_clear(&sgftree);
+	sgftreeCreateHeaderNode(&sgftree, board_size, komi, handicap);
 	clear_board();
 	return gtp_failure("repeated vertex");
       }
       add_stone(POS(i, j), BLACK);
+      sgftreeAddStone(&sgftree, BLACK, i, j);
       s += n;
     }
     else if (sscanf(s, "%*s") != EOF)
@@ -793,6 +835,8 @@ gtp_set_free_handicap(char *s)
   }
 
   if (k < 2) {
+    sgftree_clear(&sgftree);
+    sgftreeCreateHeaderNode(&sgftree, board_size, komi, handicap);
     clear_board();
     return gtp_failure("invalid handicap");
   }
@@ -829,7 +873,6 @@ gtp_loadsgf(char *s)
 {
   char filename[GTP_BUFSIZE];
   char untilstring[GTP_BUFSIZE];
-  SGFTree sgftree;
   Gameinfo gameinfo;
   int nread;
   int color_to_move;
@@ -839,6 +882,7 @@ gtp_loadsgf(char *s)
     return gtp_failure("missing filename");
 
   sgftree_clear(&sgftree);
+  sgftreeCreateHeaderNode(&sgftree, board_size, komi, handicap);
   if (!sgftree_readfile(&sgftree, filename))
     return gtp_failure("cannot open or parse '%s'", filename);
 
@@ -855,8 +899,6 @@ gtp_loadsgf(char *s)
   gtp_internal_set_boardsize(board_size);
   reset_engine();
   init_timers();
-
-  sgfFreeNode(sgftree.root);
 
   gtp_start_response(GTP_SUCCESS);
   gtp_mprintf("%C", color_to_move);
@@ -2427,6 +2469,9 @@ gtp_genmove_black(char *s)
 
   move = genmove(BLACK, NULL, NULL);
 
+  sgftreeAddPlay(&sgftree, BLACK, I(move), J(move));
+  sgffile_output(&sgftree);
+
   gnugo_play_move(move, BLACK);
 
   gtp_start_response(GTP_SUCCESS);
@@ -2451,6 +2496,9 @@ gtp_genmove_white(char *s)
     return gtp_failure("genmove cannot be called when stackp > 0");
 
   move = genmove(WHITE, NULL, NULL);
+
+  sgftreeAddPlay(&sgftree, WHITE, I(move), J(move));
+  sgffile_output(&sgftree);
 
   gnugo_play_move(move, WHITE);
 
@@ -2486,6 +2534,9 @@ gtp_genmove(char *s)
 
   if (resign)
     return gtp_success("resign");
+
+  sgftreeAddPlay(&sgftree, color, I(move), J(move));
+  sgffile_output(&sgftree);
 
   gnugo_play_move(move, color);
 
@@ -2666,6 +2717,9 @@ gtp_kgs_genmove_cleanup(char *s)
 
   capture_all_dead = save_capture_all_dead;
   
+  sgftreeAddPlay(&sgftree, color, I(move), J(move));
+  sgffile_output(&sgftree);
+
   gnugo_play_move(move, color);
 
   gtp_start_response(GTP_SUCCESS);
@@ -2817,6 +2871,8 @@ gtp_undo(char *s)
   if (stackp > 0 || !undo_move(1))
     return gtp_failure("cannot undo");
 
+  sgftreeBack(&sgftree);
+
   reset_engine();
   
   return gtp_success("");
@@ -2832,6 +2888,7 @@ gtp_undo(char *s)
 static int
 gtp_gg_undo(char *s)
 {
+  int i;
   int number_moves = 1;
 
   sscanf(s, "%d", &number_moves);
@@ -2841,6 +2898,10 @@ gtp_gg_undo(char *s)
 
   if (stackp > 0 || !undo_move(number_moves))
     return gtp_failure("cannot undo");
+
+  for (i = 0; i < number_moves; i++) {
+    sgftreeBack(&sgftree);
+  }
 
   reset_engine();
   
@@ -4173,6 +4234,41 @@ gtp_printsgf(char *s)
   }
 }
 
+/* Function:  Dump the current position as a branched sgf file to filename,
+ *            or as output if filename is missing or "-" 
+ * Arguments: optional filename
+ * Fails:     never
+ * Returns:   nothing if filename, otherwise the sgf
+ */
+static int
+gtp_printfullsgf(char *s)
+{
+  char filename[GTP_BUFSIZE];
+  int nread;
+
+  nread = sscanf(s, "%s", filename);
+
+  if (nread < 1)
+    gg_snprintf(filename, GTP_BUFSIZE, "%s", "-");
+
+  sgf_write_header(sgftree.root, 1, get_random_seed(), komi,
+                   handicap, get_level(), chinese_rules);
+  //if (handicap > 0)
+    //sgffile_recordboard(sgftree.root);
+
+  if (strcmp(filename, "-") == 0) {
+    gtp_start_response(GTP_SUCCESS);
+//    sgffile_printsgf(next, filename);
+    writesgf(sgftree.root, filename);
+    gtp_printf("\n");
+    return GTP_OK;
+  }
+  else {
+//    sgffile_printsgf(next, filename);
+    writesgf(sgftree.root, filename);
+    return gtp_success("");
+  }
+}
 
 /* Function:  Tune the parameters for the move ordering in the tactical
  *            reading.

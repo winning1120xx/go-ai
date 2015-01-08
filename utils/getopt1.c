@@ -72,6 +72,10 @@ gg_getopt_long (argc, argv, options, long_options, opt_index)
   return _getopt_internal (argc, argv, options, long_options, opt_index, 0);
 }
 
+/* Emscripten pulls in its own standard library, so getopt_long_only should
+   not be defined twice. However, we still need gg_getopt_long.  */
+#ifndef __EMSCRIPTEN__
+
 /* Like getopt_long, but '-' as well as '--' can indicate a long option.
    If an option that starts with '-' (not '--') doesn't match a long option,
    but does match a short option, it is parsed as a short option
@@ -88,6 +92,7 @@ getopt_long_only (argc, argv, options, long_options, opt_index)
   return _getopt_internal (argc, argv, options, long_options, opt_index, 1);
 }
 
+#endif
 
 #endif	/* Not ELIDE_CODE.  */
 
